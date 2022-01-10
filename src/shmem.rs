@@ -9,8 +9,9 @@ use libc::{
 
 static mut NAME: Option<CString> = None;
 
-unsafe fn shm_open(name: CString, oflag: c_int, mode: mode_t) -> c_int {
-    let name = CString::new(format!("b/dev/shm/{:?}", name)).unwrap();
+unsafe fn shm_open(name: &str, oflag: c_int, mode: mode_t) -> c_int {
+    let name = CString::new(format!("/dev/shm/{}", name)).expect("CString::new failed");
+    NAME = Some(name.clone());
     let oflag = oflag | O_NOFOLLOW | O_CLOEXEC;
 
     let ret = file_open(name.as_ptr(), oflag, mode);
@@ -39,11 +40,7 @@ unsafe fn shm_unlink(name: *const c_char) -> c_int {
 /// # Returns
 /// * `SharedMemory` - shared memory object
 fn open(name: &str, size: usize) -> i32 {
-    let c_name = CString::new(name).unwrap();
-    unsafe {
-        NAME = Some(c_name.clone());
-    }
-    let shm_fd = unsafe { shm_open(c_name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR) };
+    let shm_fd = unsafe { shm_open(name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR) };
     if shm_fd < 0 {
         log::error!("shm_open failed");
         return -1;
