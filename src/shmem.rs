@@ -1,11 +1,34 @@
+use alloc::format;
 use cstr_core::CString;
-use libc::{__errno_location, ftruncate, mmap, munmap, shm_open, shm_unlink};
-use libc::{c_int, c_void};
+use libc::{c_char, c_int, c_void, mode_t};
+use libc::{ftruncate, mmap, munmap, open as file_open, unlink};
 use libc::{
-    EEXIST, MAP_FAILED, MAP_SHARED, O_CREAT, O_RDWR, PROT_READ, PROT_WRITE, S_IRUSR, S_IWUSR,
+    MAP_FAILED, MAP_SHARED, O_CLOEXEC, O_CREAT, O_NOFOLLOW, O_RDWR, PROT_READ, PROT_WRITE, S_IRUSR,
+    S_IWUSR,
 };
 
 static mut NAME: Option<CString> = None;
+
+unsafe fn shm_open(name: CString, oflag: c_int, mode: mode_t) -> c_int {
+    let name = CString::new(format!("b/dev/shm/{:?}", name)).unwrap();
+    let oflag = oflag | O_NOFOLLOW | O_CLOEXEC;
+
+    let ret = file_open(name.as_ptr(), oflag, mode);
+    if ret < 0 {
+        log::error!("shm_open failed");
+        return -1;
+    }
+    ret
+}
+
+unsafe fn shm_unlink(name: *const c_char) -> c_int {
+    let result = unlink(name);
+    if result < 0 {
+        log::error!("shm_unlink failed");
+        return -1;
+    }
+    result
+}
 
 /// Open shared memory object with given name and size.
 ///
@@ -20,12 +43,8 @@ fn open(name: &str, size: usize) -> i32 {
     unsafe {
         NAME = Some(c_name.clone());
     }
-    let shm_fd = unsafe { shm_open(c_name.as_ptr(), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR) };
+    let shm_fd = unsafe { shm_open(c_name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR) };
     if shm_fd < 0 {
-        if unsafe { *(__errno_location() as *mut c_int) } == EEXIST {
-            let shm_fd = unsafe { shm_open(c_name.as_ptr(), O_CREAT | O_RDWR, S_IRUSR | S_IWUSR) };
-            return shm_fd;
-        }
         log::error!("shm_open failed");
         return -1;
     }
