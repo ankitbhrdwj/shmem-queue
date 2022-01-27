@@ -1,4 +1,5 @@
 use alloc::format;
+use alloc::vec::Vec;
 use cstr_core::CString;
 use libc::{c_char, c_int, c_void, mode_t};
 use libc::{ftruncate, mmap, munmap, open as file_open, unlink};
@@ -7,11 +8,10 @@ use libc::{
     S_IWUSR,
 };
 
-static mut NAME: Option<CString> = None;
+static mut NAME: Option<Vec<(*mut c_void, CString)>> = None;
 
 unsafe fn shm_open(name: &str, oflag: c_int, mode: mode_t) -> c_int {
     let name = CString::new(format!("/dev/shm/{}", name)).expect("CString::new failed");
-    NAME = Some(name.clone());
     let oflag = oflag | O_NOFOLLOW | O_CLOEXEC;
 
     let ret = file_open(name.as_ptr(), oflag, mode);
@@ -94,7 +94,21 @@ fn map(fd: i32, size: usize) -> *mut c_void {
 pub fn create_shm(name: &str, size: usize) -> *mut c_void {
     let fd = open(name, size);
 
-    map(fd, size)
+    let res = map(fd, size);
+
+    // Store name and pointer to the shared memory object
+    // in a global variable. This is needed to unlink
+    // the shared memory object when the program exits.
+    unsafe {
+        if NAME.is_none() {
+            NAME = Some(Vec::new());
+        }
+
+        NAME.as_mut()
+            .unwrap()
+            .push((res, CString::new(format!("/dev/shm/{}", name)).unwrap()));
+    }
+    res
 }
 
 /// Remove the shared memory object with given name.
@@ -104,8 +118,17 @@ pub fn create_shm(name: &str, size: usize) -> *mut c_void {
 pub fn unlink_shm(ptr: *mut c_void, size: usize) {
     unsafe {
         if NAME.is_some() {
-            let c_name = NAME.as_ref().unwrap();
-            shm_unlink(c_name.as_ptr());
+            for i in 0..NAME.as_ref().unwrap().len() {
+                if NAME.as_ref().unwrap()[i].0 == ptr {
+                    let name = NAME.as_mut().unwrap()[i].1.as_ptr();
+                    let result = shm_unlink(name);
+                    if result < 0 {
+                        log::error!("shm_unlink failed");
+                    }
+                    NAME.as_mut().unwrap().remove(i);
+                    break;
+                }
+            }
             munmap(ptr, size);
         }
     }
