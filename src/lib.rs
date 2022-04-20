@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(allocator_api)]
 
 #[cfg(test)]
 extern crate std;
@@ -16,36 +17,38 @@ use queue::Queue;
 #[repr(transparent)]
 pub struct Sender<'a, T>(Queue<'a, T>);
 
-impl<'a, T> Sender<'a, T>
-where
-    T: Sized + Default + Copy + Clone,
-{
+unsafe impl<'a, T: Send> Send for Sender<'a, T> {}
+unsafe impl<'a, T: Sync> Sync for Sender<'a, T> {}
+
+impl<'a, T: Send> Sender<'a, T> {
     pub fn new(name: &str) -> Sender<'a, T> {
-        Sender(Queue::<T>::new(name))
+        Sender(Queue::<T>::new(name).unwrap())
     }
 
     pub fn send(&self, data: T) -> bool {
-        loop {
-            if self.0.enqueue(data) {
-                return true;
-            }
+        match self.0.enqueue(data) {
+            Ok(()) => true,
+            Err(_) => false,
         }
     }
 
     pub fn try_send(&self, data: T) -> bool {
-        self.0.enqueue(data)
+        match self.0.enqueue(data) {
+            Ok(_) => true,
+            Err(_) => false,
+        }
     }
 }
 
 #[repr(transparent)]
 pub struct Receiver<'a, T>(Queue<'a, T>);
 
-impl<'a, T> Receiver<'a, T>
-where
-    T: Sized + Default + Copy + Clone,
-{
+unsafe impl<'a, T: Send> Send for Receiver<'a, T> {}
+unsafe impl<'a, T: Sync> Sync for Receiver<'a, T> {}
+
+impl<'a, T: Send> Receiver<'a, T> {
     pub fn new(name: &str) -> Receiver<'a, T> {
-        Receiver(Queue::<T>::new(name))
+        Receiver(Queue::<T>::new(name).unwrap())
     }
 
     pub fn recv(&self) -> T {
