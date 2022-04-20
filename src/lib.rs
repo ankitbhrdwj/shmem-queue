@@ -12,7 +12,9 @@ const QUEUE_SIZE: usize = 1024;
 mod queue;
 mod shmem;
 
+use alloc::string::String;
 use queue::Queue;
+use shmem::ShmemAllocator;
 
 #[repr(transparent)]
 pub struct Sender<'a, T>(Queue<'a, T>);
@@ -22,7 +24,9 @@ unsafe impl<'a, T: Sync> Sync for Sender<'a, T> {}
 
 impl<'a, T: Send + Clone> Sender<'a, T> {
     pub fn new(name: &str) -> Sender<'a, T> {
-        Sender(Queue::<T>::new().unwrap())
+        Sender(
+            Queue::<T>::with_capacity_in(QUEUE_SIZE, ShmemAllocator(String::from(name))).unwrap(),
+        )
     }
 
     pub fn send(&self, data: T) -> bool {
@@ -43,7 +47,9 @@ unsafe impl<'a, T: Sync> Sync for Receiver<'a, T> {}
 
 impl<'a, T: Send> Receiver<'a, T> {
     pub fn new(name: &str) -> Receiver<'a, T> {
-        Receiver(Queue::<T>::new().unwrap())
+        Receiver(
+            Queue::<T>::with_capacity_in(QUEUE_SIZE, ShmemAllocator(String::from(name))).unwrap(),
+        )
     }
 
     pub fn recv(&self) -> T {

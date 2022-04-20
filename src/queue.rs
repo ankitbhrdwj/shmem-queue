@@ -42,18 +42,12 @@ struct State<'a, T> {
 unsafe impl<'a, T: Send> Send for State<'a, T> {}
 unsafe impl<'a, T: Sync> Sync for State<'a, T> {}
 
-pub struct Queue<'a, T> {
-    state: Arc<State<'a, T>>,
-    phantom: PhantomData<&'a T>,
-}
-
 impl<'a, T: Send> State<'a, T> {
     fn with_capacity(capacity: usize) -> Result<State<'a, T>, ()> {
-        let capacity = Self::capacity(capacity);
-        let b = capacity * size_of::<UnsafeCell<Node<T>>>();
+        let (num, buf_size) = Self::capacity(capacity);
         let mem = unsafe {
             alloc(
-                Layout::from_size_align(b, align_of::<UnsafeCell<Node<T>>>())
+                Layout::from_size_align(buf_size, align_of::<UnsafeCell<Node<T>>>())
                     .expect("Alignment error while allocating the Queue!"),
             )
         };
@@ -61,28 +55,26 @@ impl<'a, T: Send> State<'a, T> {
             panic!("Failed to allocate memory for the Queue!");
         }
 
-        Self::init(capacity, mem)
+        Self::init(num, mem)
     }
 
     fn with_capacity_in<A: Allocator>(capacity: usize, alloc: A) -> Result<State<'a, T>, ()> {
-        let capacity = Self::capacity(capacity);
-        let capacity = Self::capacity(capacity);
-        let b = capacity * size_of::<UnsafeCell<Node<T>>>();
+        let (num, buf_size) = Self::capacity(capacity);
         let mem = unsafe {
             alloc
                 .allocate(
-                    Layout::from_size_align(b, align_of::<UnsafeCell<Node<T>>>())
+                    Layout::from_size_align(buf_size, align_of::<UnsafeCell<Node<T>>>())
                         .expect("Alignment error while allocating the Queue!"),
                 )
                 .expect("Failed to allocate memory for the Queue!")
         };
         let mem = mem.as_ptr() as *mut u8;
 
-        Self::init(capacity, mem)
+        Self::init(num, mem)
     }
 
-    fn init(capacity: usize, mem: *mut u8) -> Result<State<'a, T>, ()> {
-        let buffer = unsafe { from_raw_parts_mut(mem as *mut UnsafeCell<Node<T>>, capacity) };
+    fn init(num: usize, mem: *mut u8) -> Result<State<'a, T>, ()> {
+        let buffer = unsafe { from_raw_parts_mut(mem as *mut UnsafeCell<Node<T>>, num) };
         for (i, e) in buffer.iter_mut().enumerate() {
             unsafe {
                 ::core::ptr::write(
@@ -97,14 +89,14 @@ impl<'a, T: Send> State<'a, T> {
 
         Ok(State {
             buffer,
-            mask: capacity - 1,
+            mask: num - 1,
             enqueue_pos: CachePadded::new(AtomicUsize::new(0)),
             dequeue_pos: CachePadded::new(AtomicUsize::new(0)),
         })
     }
 
-    fn capacity(capacity: usize) -> usize {
-        if capacity < 2 || (capacity & (capacity - 1)) != 0 {
+    fn capacity(capacity: usize) -> (usize, usize) {
+        let num = if capacity < 2 || (capacity & (capacity - 1)) != 0 {
             if capacity < 2 {
                 2
             } else {
@@ -113,7 +105,9 @@ impl<'a, T: Send> State<'a, T> {
             }
         } else {
             capacity
-        }
+        };
+
+        (num, num * size_of::<UnsafeCell<Node<T>>>())
     }
 
     fn push(&self, value: T) -> Result<(), T> {
@@ -189,25 +183,27 @@ impl<'a, T: Send> State<'a, T> {
     }
 }
 
+// Lock-free MPMC queue.
+pub struct Queue<'a, T> {
+    state: Arc<State<'a, T>>,
+}
+
 impl<'a, T: Send> Queue<'a, T> {
     pub fn new() -> Result<Queue<'a, T>, ()> {
         State::with_capacity(QUEUE_SIZE).map(|state| Queue {
             state: Arc::new(state),
-            phantom: PhantomData,
         })
     }
 
     pub fn with_capacity(capacity: usize) -> Result<Queue<'a, T>, ()> {
         Ok(Queue {
             state: Arc::new(State::with_capacity(capacity)?),
-            phantom: PhantomData,
         })
     }
 
     pub fn with_capacity_in<A: Allocator>(capacity: usize, alloc: A) -> Result<Queue<'a, T>, ()> {
         Ok(Queue {
             state: Arc::new(State::with_capacity_in(capacity, alloc)?),
-            phantom: PhantomData,
         })
     }
 
@@ -228,7 +224,6 @@ impl<'a, T: Send> Clone for Queue<'a, T> {
     fn clone(&self) -> Queue<'a, T> {
         Queue {
             state: self.state.clone(),
-            phantom: PhantomData,
         }
     }
 }

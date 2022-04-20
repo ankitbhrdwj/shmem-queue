@@ -1,4 +1,9 @@
+use core::alloc::{AllocError, Allocator, Layout};
+use core::ptr::NonNull;
+use core::slice::from_raw_parts_mut;
+
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use cstr_core::CString;
 use libc::{c_char, c_int, c_void, mode_t};
@@ -131,5 +136,19 @@ pub fn unlink_shm(ptr: *mut c_void, size: usize) {
             }
             munmap(ptr, size);
         }
+    }
+}
+
+pub struct ShmemAllocator(pub String);
+
+unsafe impl Allocator for ShmemAllocator {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let ptr = create_shm(&self.0, layout.size());
+        let slice = unsafe { from_raw_parts_mut(ptr as *mut u8, layout.size()) };
+        NonNull::new(slice).ok_or(AllocError)
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        unlink_shm(ptr.as_ptr() as *mut c_void, layout.size());
     }
 }

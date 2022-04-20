@@ -8,12 +8,13 @@ struct Message {
 
 fn main() {
     let mut message = Message {
-        secret: 0xDEADBEEF,
+        secret: 0,
         random_number: 0,
     };
     let iter = 10 * 1024;
     let sender = Sender::<Message>::new("queue");
     for i in 0..iter {
+        message.secret = 0xDEADBEEF;
         message.random_number = i;
         sender.send(message);
     }
