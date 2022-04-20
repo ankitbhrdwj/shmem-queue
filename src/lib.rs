@@ -26,17 +26,11 @@ impl<'a, T: Send> Sender<'a, T> {
     }
 
     pub fn send(&self, data: T) -> bool {
-        match self.0.enqueue(data) {
-            Ok(()) => true,
-            Err(_) => false,
-        }
+        self.0.enqueue(data).is_ok()
     }
 
     pub fn try_send(&self, data: T) -> bool {
-        match self.0.enqueue(data) {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        self.0.enqueue(data).is_ok()
     }
 }
 
