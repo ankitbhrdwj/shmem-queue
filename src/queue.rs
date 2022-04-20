@@ -1,176 +1,297 @@
-use crate::{shmem, QUEUE_SIZE};
-use core::cell::Cell;
-use core::mem::size_of;
-use core::sync::atomic::{AtomicUsize, Ordering};
+// Copyright © 2021 VMware, Inc. All Rights Reserved.
+// Copyright © 2010-2011 Dmitry Vyukov. All rights reserved.
+// SPDX-License-Identifier: BSD-2-Clause
 
-type QueueEntry<T> = [Cell<T>; QUEUE_SIZE];
+// http://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue
+// This queue is copy pasted from old rust stdlib.
 
-pub struct Queue<'a, T> {
-    log: &'a QueueEntry<T>,
-    head: *const AtomicUsize,
-    tail: *const AtomicUsize,
+// Taken from - https://github.com/brayniac/mpmc/blob/master/src/lib.rs
+
+#![allow(warnings)]
+
+use alloc::alloc::{alloc, Layout};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::cell::UnsafeCell;
+use core::marker::PhantomData;
+use core::mem::{align_of, size_of};
+use core::slice::from_raw_parts_mut;
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+
+use crossbeam_utils::CachePadded;
+
+use crate::QUEUE_SIZE;
+
+struct Node<T> {
+    sequence: AtomicUsize,
+    value: Option<T>,
 }
 
-/// This is just to make the compiler happy
-/// when using queue with multiple threads.
-unsafe impl<'a, T> Send for Queue<'a, T> {}
-unsafe impl<'a, T> Sync for Queue<'a, T> {}
+unsafe impl<T: Send> Send for Node<T> {}
+unsafe impl<T: Sync> Sync for Node<T> {}
 
-impl<'a, T> Queue<'a, T>
-where
-    T: Sized + Default + Copy + Clone,
-{
-    pub fn new(name: &str) -> Queue<'a, T> {
-        let buffer_size = size_of::<QueueEntry<T>>() + size_of::<AtomicUsize>() * 2;
-        let inner = shmem::create_shm(name, buffer_size);
+struct State<'a, T> {
+    buffer: &'a [UnsafeCell<Node<T>>],
+    mask: usize,
+    enqueue_pos: CachePadded<AtomicUsize>,
+    dequeue_pos: CachePadded<AtomicUsize>,
+}
 
-        let log = unsafe { &mut *(inner as *mut QueueEntry<T>) };
-        let head = unsafe { inner.add(size_of::<QueueEntry<T>>()) } as *mut AtomicUsize;
-        let tail = unsafe { inner.add(size_of::<QueueEntry<T>>() + size_of::<AtomicUsize>()) }
-            as *mut AtomicUsize;
-        Queue { log, head, tail }
-    }
+unsafe impl<'a, T: Send> Send for State<'a, T> {}
+unsafe impl<'a, T: Sync> Sync for State<'a, T> {}
 
-    fn head(&self) -> usize {
-        unsafe { (*self.head).load(Ordering::Acquire) }
-    }
+pub struct Queue<'a, T> {
+    state: Arc<State<'a, T>>,
+    phantom: PhantomData<&'a T>,
+}
 
-    fn tail(&self) -> usize {
-        unsafe { (*self.tail).load(Ordering::Acquire) }
-    }
+impl<'a, T: Send> State<'a, T> {
+    fn with_capacity(capacity: usize) -> Result<State<'a, T>, ()> {
+        let capacity = if capacity < 2 || (capacity & (capacity - 1)) != 0 {
+            if capacity < 2 {
+                2
+            } else {
+                // use next power of 2 as capacity
+                capacity.next_power_of_two()
+            }
+        } else {
+            capacity
+        };
 
-    pub fn enqueue(&self, value: T) -> bool {
-        let head = self.head();
-        let tail = self.tail();
-        let next = (head + 1) % QUEUE_SIZE;
-        if next == tail {
-            return false;
+        let b = capacity * size_of::<UnsafeCell<Node<T>>>();
+        let mem = unsafe {
+            alloc(
+                Layout::from_size_align(b, align_of::<UnsafeCell<Node<T>>>())
+                    .expect("Alignment error while allocating the shared log!"),
+            )
+        };
+        if mem.is_null() {
+            panic!("Failed to allocate memory for the shared log!");
         }
-        unsafe {
-            (*self.log.get_unchecked(head)).set(value);
-            (*self.head).store(next, Ordering::Release);
+        let buffer = unsafe { from_raw_parts_mut(mem as *mut UnsafeCell<Node<T>>, capacity) };
+
+        for (i, e) in buffer.iter_mut().enumerate() {
+            unsafe {
+                ::core::ptr::write(
+                    e,
+                    UnsafeCell::new(Node {
+                        sequence: AtomicUsize::new(i),
+                        value: None,
+                    }),
+                );
+            }
         }
-        true
+
+        Ok(State {
+            buffer,
+            mask: capacity - 1,
+            enqueue_pos: CachePadded::new(AtomicUsize::new(0)),
+            dequeue_pos: CachePadded::new(AtomicUsize::new(0)),
+        })
+    }
+
+    fn push(&self, value: T) -> Result<(), T> {
+        let mask = self.mask;
+        let mut pos = self.enqueue_pos.load(Relaxed);
+        loop {
+            let node = &self.buffer[pos & mask];
+            let seq = unsafe { (*node.get()).sequence.load(Acquire) };
+            let diff: isize = seq as isize - pos as isize;
+
+            if diff == 0 {
+                match self
+                    .enqueue_pos
+                    .compare_exchange_weak(pos, pos + 1, Relaxed, Relaxed)
+                {
+                    Ok(enqueue_pos) => {
+                        debug_assert_eq!(enqueue_pos, pos);
+                        unsafe {
+                            (*node.get()).value = Some(value);
+                            (*node.get()).sequence.store(pos + 1, Release);
+                        }
+                        break;
+                    }
+                    Err(enqueue_pos) => pos = enqueue_pos,
+                }
+            } else if diff < 0 {
+                return Err(value);
+            } else {
+                pos = self.enqueue_pos.load(Relaxed);
+            }
+        }
+        Ok(())
+    }
+
+    fn pop(&self) -> Option<T> {
+        let mask = self.mask;
+        let mut pos = self.dequeue_pos.load(Relaxed);
+        loop {
+            let node = &self.buffer[pos & mask];
+            let seq = unsafe { (*node.get()).sequence.load(Acquire) };
+            let diff: isize = seq as isize - (pos + 1) as isize;
+            if diff == 0 {
+                match self
+                    .dequeue_pos
+                    .compare_exchange_weak(pos, pos + 1, Relaxed, Relaxed)
+                {
+                    Ok(dequeue_pos) => {
+                        debug_assert_eq!(dequeue_pos, pos);
+                        unsafe {
+                            let value = (*node.get()).value.take();
+                            (*node.get()).sequence.store(pos + mask + 1, Release);
+                            return value;
+                        }
+                    }
+                    Err(dequeue_pos) => pos = dequeue_pos,
+                }
+            } else if diff < 0 {
+                return None;
+            } else {
+                pos = self.dequeue_pos.load(Relaxed);
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        let dequeue = self.dequeue_pos.load(Relaxed);
+        let enqueue = self.enqueue_pos.load(Relaxed);
+        if enqueue > dequeue {
+            enqueue - dequeue
+        } else {
+            dequeue - enqueue
+        }
+    }
+}
+
+impl<'a, T: Send> Queue<'a, T> {
+    pub fn new(_name: &str) -> Result<Queue<'a, T>, ()> {
+        State::with_capacity(QUEUE_SIZE).map(|state| Queue {
+            state: Arc::new(state),
+            phantom: PhantomData,
+        })
+    }
+
+    pub fn with_capacity(capacity: usize) -> Result<Queue<'a, T>, ()> {
+        Ok(Queue {
+            state: Arc::new(State::with_capacity(capacity)?),
+            phantom: PhantomData,
+        })
+    }
+
+    pub fn enqueue(&self, value: T) -> Result<(), T> {
+        self.state.push(value)
     }
 
     pub fn dequeue(&self) -> Option<T> {
-        let head = self.head();
-        let tail = self.tail();
+        self.state.pop()
+    }
 
-        if head == tail {
-            return None;
-        }
-
-        let next_tail = (tail + 1) % QUEUE_SIZE;
-        unsafe {
-            let value = *self.log[tail as usize].as_ptr().as_ref().unwrap();
-            (&*self.tail).store(next_tail, Ordering::Release);
-            Some(value)
-        }
+    pub fn len(&self) -> usize {
+        self.state.len()
     }
 }
 
-impl<'a, T> Drop for Queue<'a, T> {
-    fn drop(&mut self) {
-        let size = size_of::<QueueEntry<T>>() + size_of::<AtomicUsize>() * 2;
-        shmem::unlink_shm(self.log.as_ptr() as *mut libc::c_void, size);
+impl<'a, T: Send> Clone for Queue<'a, T> {
+    fn clone(&self) -> Queue<'a, T> {
+        Queue {
+            state: self.state.clone(),
+            phantom: PhantomData,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Queue;
+    use alloc::vec;
+    use std::sync::mpsc::channel;
+    use std::thread;
 
     #[test]
-    fn test_default_initialization() {
-        let queue = Queue::<i32>::new("test");
-        assert!(queue.log.len() == QUEUE_SIZE);
-        assert_eq!(queue.head(), 0);
-        assert_eq!(queue.tail(), 0);
-        for i in 0..QUEUE_SIZE {
-            let ele = unsafe { queue.log[i].as_ptr().as_ref().unwrap() };
-            assert!(*ele == 0);
+    fn len() {
+        // fill and drain N elements from the queue, with N: 1..=1024
+        let q = Queue::<usize>::with_capacity(1024).unwrap();
+        assert_eq!(q.len(), 0);
+        for i in 1..=1024 {
+            for j in 0..i {
+                assert_eq!(q.len(), j);
+                let _ = q.enqueue(j);
+                assert_eq!(q.len(), j + 1);
+            }
+            for j in (0..i).rev() {
+                assert_eq!(q.len(), j + 1);
+                let _ = q.dequeue();
+                assert_eq!(q.len(), j);
+            }
+        }
+
+        // steps through each potential wrap-around by filling to N - 1 and
+        // draining each time
+        let q = Queue::<usize>::with_capacity(1024).unwrap();
+        assert_eq!(q.len(), 0);
+        for _ in 1..=1024 {
+            for j in 0..1023 {
+                assert_eq!(q.len(), j);
+                let _ = q.enqueue(j);
+                assert_eq!(q.len(), j + 1);
+            }
+            for j in (0..1023).rev() {
+                assert_eq!(q.len(), j + 1);
+                let _ = q.dequeue();
+                assert_eq!(q.len(), j);
+            }
         }
     }
 
     #[test]
-    fn test_enqueue() {
-        let queue = Queue::<i32>::new("test");
-        assert!(queue.enqueue(1));
-        assert_eq!(queue.head(), 1);
-    }
+    fn test() {
+        let nthreads = 8;
+        let nmsgs = 1000;
+        let q = Queue::with_capacity(nthreads * nmsgs).unwrap();
+        assert_eq!(None, q.dequeue());
+        let (tx, rx) = channel();
 
-    #[test]
-    fn test_dequeue() {
-        let queue = Queue::<i32>::new("test");
-        assert!(queue.enqueue(1));
-        assert_eq!(queue.head(), 1);
-        assert_eq!(queue.tail(), 0);
-
-        assert_eq!(queue.dequeue(), Some(1));
-        assert_eq!(queue.head(), 1);
-        assert_eq!(queue.tail(), 1);
-    }
-
-    #[test]
-    fn test_equeue_full() {
-        let queue = Queue::<i32>::new("test");
-        for i in 0..QUEUE_SIZE - 1 {
-            assert!(queue.enqueue(i as i32));
+        for _ in 0..nthreads {
+            let q = q.clone();
+            let tx = tx.clone();
+            thread::spawn(move || {
+                let q = q;
+                for i in 0..nmsgs {
+                    assert!(q.enqueue(i).is_ok());
+                }
+                tx.send(()).unwrap();
+            });
         }
-        assert!(queue.tail() == 0);
-        assert!(queue.head() == QUEUE_SIZE - 1);
-        assert!(!queue.enqueue(QUEUE_SIZE as i32));
-    }
 
-    #[test]
-    fn test_dequeue_empty() {
-        let queue = Queue::<i32>::new("test");
-        assert_eq!(queue.dequeue(), None);
-    }
-
-    #[test]
-    fn test_two_clients() {
-        let producer = Queue::<i32>::new("test");
-        let consumer = Queue::<i32>::new("test");
-
-        assert!(producer.enqueue(1));
-        assert_eq!(producer.head(), 1);
-        assert_eq!(producer.tail(), 0);
-
-        assert_eq!(consumer.dequeue(), Some(1));
-        assert_eq!(consumer.head(), 1);
-        assert_eq!(consumer.tail(), 1);
-    }
-
-    #[test]
-    fn test_parallel_client() {
-        let producer = Queue::<i32>::new("test");
-        let consumer = Queue::<i32>::new("test");
-        let num_iterations = 10 * QUEUE_SIZE;
-
-        let producer_thread = std::thread::spawn(move || {
-            for i in 0..num_iterations {
+        let mut completion_rxs = vec![];
+        for _ in 0..nthreads {
+            let (tx, rx) = channel();
+            completion_rxs.push(rx);
+            let q = q.clone();
+            thread::spawn(move || {
+                let q = q;
+                let mut i = 0;
                 loop {
-                    if producer.enqueue(i as i32) {
-                        break;
+                    match q.dequeue() {
+                        None => {}
+                        Some(_) => {
+                            i += 1;
+                            if i == nmsgs {
+                                break;
+                            }
+                        }
                     }
                 }
-            }
-        });
+                tx.send(i).unwrap();
+            });
+        }
 
-        let consumer_thread = std::thread::spawn(move || {
-            for i in 0..num_iterations {
-                loop {
-                    if let Some(value) = consumer.dequeue() {
-                        assert_eq!(value, i as i32);
-                        break;
-                    }
-                }
-            }
-        });
-
-        producer_thread.join().unwrap();
-        consumer_thread.join().unwrap();
+        for rx in completion_rxs.iter_mut() {
+            assert_eq!(nmsgs, rx.recv().unwrap());
+        }
+        for _ in 0..nthreads {
+            rx.recv().unwrap();
+        }
     }
 }
