@@ -20,13 +20,14 @@ pub struct Sender<'a, T>(Queue<'a, T>);
 unsafe impl<'a, T: Send> Send for Sender<'a, T> {}
 unsafe impl<'a, T: Sync> Sync for Sender<'a, T> {}
 
-impl<'a, T: Send> Sender<'a, T> {
+impl<'a, T: Send + Clone> Sender<'a, T> {
     pub fn new(name: &str) -> Sender<'a, T> {
-        Sender(Queue::<T>::new(name).unwrap())
+        Sender(Queue::<T>::new().unwrap())
     }
 
     pub fn send(&self, data: T) -> bool {
-        self.0.enqueue(data).is_ok()
+        while self.0.enqueue(data.clone()).is_err() {}
+        true
     }
 
     pub fn try_send(&self, data: T) -> bool {
@@ -42,7 +43,7 @@ unsafe impl<'a, T: Sync> Sync for Receiver<'a, T> {}
 
 impl<'a, T: Send> Receiver<'a, T> {
     pub fn new(name: &str) -> Receiver<'a, T> {
-        Receiver(Queue::<T>::new(name).unwrap())
+        Receiver(Queue::<T>::new().unwrap())
     }
 
     pub fn recv(&self) -> T {
