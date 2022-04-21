@@ -139,6 +139,12 @@ pub fn unlink_shm(ptr: *mut c_void, size: usize) {
     }
 }
 
+/// Check if a path already exists.
+pub fn exists(name: &str) -> bool {
+    let path = CString::new(format!("/dev/shm/{}", name)).expect("CString::new failed");
+    unsafe { libc::access(path.as_ptr(), libc::F_OK) == 0 }
+}
+
 pub struct ShmemAllocator(pub String);
 
 unsafe impl Allocator for ShmemAllocator {

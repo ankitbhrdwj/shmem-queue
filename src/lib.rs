@@ -14,7 +14,7 @@ mod shmem;
 
 use alloc::string::String;
 use queue::Queue;
-use shmem::ShmemAllocator;
+use shmem::{exists, ShmemAllocator};
 
 #[repr(transparent)]
 pub struct Sender<'a, T>(Queue<'a, T>);
@@ -25,7 +25,12 @@ unsafe impl<'a, T: Sync> Sync for Sender<'a, T> {}
 impl<'a, T: Send + Clone> Sender<'a, T> {
     pub fn new(name: &str) -> Sender<'a, T> {
         Sender(
-            Queue::<T>::with_capacity_in(QUEUE_SIZE, ShmemAllocator(String::from(name))).unwrap(),
+            Queue::<T>::with_capacity_in(
+                !exists(name),
+                QUEUE_SIZE,
+                ShmemAllocator(String::from(name)),
+            )
+            .unwrap(),
         )
     }
 
@@ -48,7 +53,12 @@ unsafe impl<'a, T: Sync> Sync for Receiver<'a, T> {}
 impl<'a, T: Send> Receiver<'a, T> {
     pub fn new(name: &str) -> Receiver<'a, T> {
         Receiver(
-            Queue::<T>::with_capacity_in(QUEUE_SIZE, ShmemAllocator(String::from(name))).unwrap(),
+            Queue::<T>::with_capacity_in(
+                !exists(name),
+                QUEUE_SIZE,
+                ShmemAllocator(String::from(name)),
+            )
+            .unwrap(),
         )
     }
 
