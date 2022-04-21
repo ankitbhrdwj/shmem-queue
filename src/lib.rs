@@ -1,5 +1,6 @@
 #![no_std]
 #![feature(allocator_api)]
+#![allow(missing_docs)]
 
 #[cfg(test)]
 extern crate std;
