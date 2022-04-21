@@ -18,13 +18,14 @@ use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::mem::{align_of, size_of};
 use core::slice::from_raw_parts_mut;
-use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crossbeam_utils::CachePadded;
 
 use crate::QUEUE_SIZE;
 
+#[repr(C)]
 struct Node<T> {
     sequence: AtomicUsize,
     value: Option<T>,
@@ -33,11 +34,12 @@ struct Node<T> {
 unsafe impl<T: Send> Send for Node<T> {}
 unsafe impl<T: Sync> Sync for Node<T> {}
 
+#[repr(C)]
 struct State<'a, T> {
-    buffer: &'a [UnsafeCell<Node<T>>],
     mask: usize,
-    enqueue_pos: CachePadded<AtomicUsize>,
-    dequeue_pos: CachePadded<AtomicUsize>,
+    enqueue_pos: *const AtomicUsize,
+    dequeue_pos: *const AtomicUsize,
+    buffer: &'a [UnsafeCell<Node<T>>],
 }
 
 unsafe impl<'a, T: Send> Send for State<'a, T> {}
@@ -48,7 +50,7 @@ impl<'a, T: Send> State<'a, T> {
         let (num, buf_size) = Self::capacity(capacity);
         let mem = unsafe {
             alloc(
-                Layout::from_size_align(buf_size, align_of::<UnsafeCell<Node<T>>>())
+                Layout::from_size_align(buf_size, align_of::<State<T>>())
                     .expect("Alignment error while allocating the Queue!"),
             )
         };
@@ -68,7 +70,7 @@ impl<'a, T: Send> State<'a, T> {
         let mem = unsafe {
             alloc
                 .allocate(
-                    Layout::from_size_align(buf_size, align_of::<UnsafeCell<Node<T>>>())
+                    Layout::from_size_align(buf_size, align_of::<State<T>>())
                         .expect("Alignment error while allocating the Queue!"),
                 )
                 .expect("Failed to allocate memory for the Queue!")
@@ -79,13 +81,29 @@ impl<'a, T: Send> State<'a, T> {
     }
 
     fn init(init: bool, num: usize, mem: *mut u8) -> Result<Box<State<'a, T>>, ()> {
-        let buffer_ptr = unsafe { mem.add(size_of::<State<T>>()) as *mut UnsafeCell<Node<T>> };
-        let buffer = unsafe { from_raw_parts_mut(buffer_ptr, num) };
+        let mut state = State {
+            mask: num - 1,
+            enqueue_pos: unsafe { &mut *(mem as *mut AtomicUsize) },
+            dequeue_pos: unsafe {
+                &mut *((mem as *mut u8).add(size_of::<AtomicUsize>()) as *mut AtomicUsize)
+            },
+            buffer: unsafe {
+                from_raw_parts_mut(
+                    (mem as *mut u8).add(size_of::<AtomicUsize>() * 2) as *mut UnsafeCell<Node<T>>,
+                    num,
+                )
+            },
+        };
 
-        let mut state = unsafe { Box::from_raw(mem as *mut State<T>) };
         if init {
-            for (i, e) in buffer.iter_mut().enumerate() {
-                unsafe {
+            let mut buffer = unsafe {
+                let ptr =
+                    (mem as *mut u8).add(size_of::<AtomicUsize>() * 2) as *mut UnsafeCell<Node<T>>;
+                from_raw_parts_mut(ptr, num)
+            };
+
+            unsafe {
+                for (i, e) in buffer.iter_mut().enumerate() {
                     ::core::ptr::write(
                         e,
                         UnsafeCell::new(Node {
@@ -94,16 +112,12 @@ impl<'a, T: Send> State<'a, T> {
                         }),
                     );
                 }
+                (*state.dequeue_pos).store(0, Release);
+                (*state.enqueue_pos).store(0, Release);
             }
-
-            state.enqueue_pos.store(0, Release);
-            state.dequeue_pos.store(0, Release);
         }
 
-        state.buffer = buffer;
-        state.mask = num - 1;
-
-        Ok(state)
+        Ok(Box::new(state))
     }
 
     fn capacity(capacity: usize) -> (usize, usize) {
@@ -120,29 +134,32 @@ impl<'a, T: Send> State<'a, T> {
 
         (
             num,
-            size_of::<State<T>>() + num * size_of::<UnsafeCell<Node<T>>>(),
+            2 * size_of::<AtomicUsize>() + num * size_of::<UnsafeCell<Node<T>>>(),
         )
     }
 
-    fn push(&self, value: T) -> Result<(), T> {
+    fn enqueue_pos(&self, ordering: Ordering) -> usize {
+        unsafe { (*self.enqueue_pos).load(ordering) }
+    }
+
+    fn dequeue_pos(&self, ordering: Ordering) -> usize {
+        unsafe { (*self.dequeue_pos).load(ordering) }
+    }
+
+    unsafe fn push(&self, value: T) -> Result<(), T> {
         let mask = self.mask;
-        let mut pos = self.enqueue_pos.load(Relaxed);
+        let mut pos = self.enqueue_pos(Relaxed);
         loop {
             let node = &self.buffer[pos & mask];
-            let seq = unsafe { (*node.get()).sequence.load(Acquire) };
+            let seq = (*node.get()).sequence.load(Acquire);
             let diff: isize = seq as isize - pos as isize;
 
             if diff == 0 {
-                match self
-                    .enqueue_pos
-                    .compare_exchange_weak(pos, pos + 1, Relaxed, Relaxed)
-                {
+                match (*self.enqueue_pos).compare_exchange_weak(pos, pos + 1, Relaxed, Relaxed) {
                     Ok(enqueue_pos) => {
                         debug_assert_eq!(enqueue_pos, pos);
-                        unsafe {
-                            (*node.get()).value = Some(value);
-                            (*node.get()).sequence.store(pos + 1, Release);
-                        }
+                        (*node.get()).value = Some(value);
+                        (*node.get()).sequence.store(pos + 1, Release);
                         break;
                     }
                     Err(enqueue_pos) => pos = enqueue_pos,
@@ -150,45 +167,40 @@ impl<'a, T: Send> State<'a, T> {
             } else if diff < 0 {
                 return Err(value);
             } else {
-                pos = self.enqueue_pos.load(Relaxed);
+                pos = self.enqueue_pos(Relaxed);
             }
         }
         Ok(())
     }
 
-    fn pop(&self) -> Option<T> {
+    unsafe fn pop(&self) -> Option<T> {
         let mask = self.mask;
-        let mut pos = self.dequeue_pos.load(Relaxed);
+        let mut pos = self.dequeue_pos(Relaxed);
         loop {
             let node = &self.buffer[pos & mask];
-            let seq = unsafe { (*node.get()).sequence.load(Acquire) };
+            let seq = (*node.get()).sequence.load(Acquire);
             let diff: isize = seq as isize - (pos + 1) as isize;
             if diff == 0 {
-                match self
-                    .dequeue_pos
-                    .compare_exchange_weak(pos, pos + 1, Relaxed, Relaxed)
-                {
+                match (*self.dequeue_pos).compare_exchange_weak(pos, pos + 1, Relaxed, Relaxed) {
                     Ok(dequeue_pos) => {
                         debug_assert_eq!(dequeue_pos, pos);
-                        unsafe {
-                            let value = (*node.get()).value.take();
-                            (*node.get()).sequence.store(pos + mask + 1, Release);
-                            return value;
-                        }
+                        let value = (*node.get()).value.take();
+                        (*node.get()).sequence.store(pos + mask + 1, Release);
+                        return value;
                     }
                     Err(dequeue_pos) => pos = dequeue_pos,
                 }
             } else if diff < 0 {
                 return None;
             } else {
-                pos = self.dequeue_pos.load(Relaxed);
+                pos = self.dequeue_pos(Relaxed);
             }
         }
     }
 
-    fn len(&self) -> usize {
-        let dequeue = self.dequeue_pos.load(Relaxed);
-        let enqueue = self.enqueue_pos.load(Relaxed);
+    unsafe fn len(&self) -> usize {
+        let dequeue = self.dequeue_pos(Relaxed);
+        let enqueue = self.enqueue_pos(Relaxed);
         if enqueue > dequeue {
             enqueue - dequeue
         } else {
@@ -226,15 +238,15 @@ impl<'a, T: Send> Queue<'a, T> {
     }
 
     pub fn enqueue(&self, value: T) -> Result<(), T> {
-        self.state.push(value)
+        unsafe { self.state.push(value) }
     }
 
     pub fn dequeue(&self) -> Option<T> {
-        self.state.pop()
+        unsafe { self.state.pop() }
     }
 
     pub fn len(&self) -> usize {
-        self.state.len()
+        unsafe { self.state.len() }
     }
 }
 
@@ -259,8 +271,8 @@ mod tests {
     fn test_default_initialization() {
         let queue = Queue::<i32>::new().unwrap();
         assert_eq!(queue.len(), 0);
-        assert_eq!(queue.state.enqueue_pos.load(Ordering::Relaxed), 0);
-        assert_eq!(queue.state.dequeue_pos.load(Ordering::Relaxed), 0);
+        assert_eq!(queue.state.enqueue_pos(Ordering::Relaxed), 0);
+        assert_eq!(queue.state.dequeue_pos(Ordering::Relaxed), 0);
         for i in 0..QUEUE_SIZE {
             let ele = unsafe { &*queue.state.buffer[i].get() };
             assert!(ele.value == None);
@@ -272,19 +284,19 @@ mod tests {
     fn test_enqueue() {
         let queue = Queue::<i32>::new().unwrap();
         assert!(queue.enqueue(1).is_ok());
-        assert_eq!(queue.state.enqueue_pos.load(Ordering::Relaxed), 1);
+        assert_eq!(queue.state.enqueue_pos(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn test_dequeue() {
         let queue = Queue::<i32>::new().unwrap();
         assert!(queue.enqueue(1).is_ok());
-        assert_eq!(queue.state.enqueue_pos.load(Ordering::Relaxed), 1);
-        assert_eq!(queue.state.dequeue_pos.load(Ordering::Relaxed), 0);
+        assert_eq!(queue.state.enqueue_pos(Ordering::Relaxed), 1);
+        assert_eq!(queue.state.dequeue_pos(Ordering::Relaxed), 0);
 
         assert_eq!(queue.dequeue(), Some(1));
-        assert_eq!(queue.state.enqueue_pos.load(Ordering::Relaxed), 1);
-        assert_eq!(queue.state.dequeue_pos.load(Ordering::Relaxed), 1);
+        assert_eq!(queue.state.enqueue_pos(Ordering::Relaxed), 1);
+        assert_eq!(queue.state.dequeue_pos(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -293,8 +305,8 @@ mod tests {
         for i in 0..QUEUE_SIZE {
             assert!(queue.enqueue(i as i32).is_ok());
         }
-        assert!(queue.state.dequeue_pos.load(Ordering::Relaxed) == 0);
-        assert!(queue.state.enqueue_pos.load(Ordering::Relaxed) == QUEUE_SIZE);
+        assert!(queue.state.dequeue_pos(Ordering::Relaxed) == 0);
+        assert!(queue.state.enqueue_pos(Ordering::Relaxed) == QUEUE_SIZE);
         assert!(queue.enqueue(QUEUE_SIZE as i32).is_err());
     }
 
@@ -311,12 +323,12 @@ mod tests {
         let consumer = queue.clone();
 
         assert!(producer.enqueue(1).is_ok());
-        assert_eq!(producer.state.enqueue_pos.load(Ordering::Relaxed), 1);
-        assert_eq!(producer.state.dequeue_pos.load(Ordering::Relaxed), 0);
+        assert_eq!(producer.state.enqueue_pos(Ordering::Relaxed), 1);
+        assert_eq!(producer.state.dequeue_pos(Ordering::Relaxed), 0);
 
         assert_eq!(consumer.dequeue(), Some(1));
-        assert_eq!(consumer.state.enqueue_pos.load(Ordering::Relaxed), 1);
-        assert_eq!(consumer.state.dequeue_pos.load(Ordering::Relaxed), 1);
+        assert_eq!(consumer.state.enqueue_pos(Ordering::Relaxed), 1);
+        assert_eq!(consumer.state.dequeue_pos(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -442,8 +454,8 @@ mod tests {
     fn test_custom_allocator() {
         let q = Queue::<i32>::with_capacity_in(true, QUEUE_SIZE, Global).unwrap();
         assert_eq!(q.len(), 0);
-        assert_eq!(q.state.enqueue_pos.load(Ordering::Relaxed), 0);
-        assert_eq!(q.state.dequeue_pos.load(Ordering::Relaxed), 0);
+        assert_eq!(q.state.enqueue_pos(Ordering::Relaxed), 0);
+        assert_eq!(q.state.dequeue_pos(Ordering::Relaxed), 0);
         for i in 0..QUEUE_SIZE {
             let ele = unsafe { &*q.state.buffer[i].get() };
             assert!(ele.value == None);
