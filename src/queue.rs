@@ -55,10 +55,14 @@ impl<'a, T: Send> State<'a, T> {
             panic!("Failed to allocate memory for the Queue!");
         }
 
-        Self::init(num, mem)
+        Self::init(true, num, mem)
     }
 
-    fn with_capacity_in<A: Allocator>(capacity: usize, alloc: A) -> Result<State<'a, T>, ()> {
+    fn with_capacity_in<A: Allocator>(
+        init: bool,
+        capacity: usize,
+        alloc: A,
+    ) -> Result<State<'a, T>, ()> {
         let (num, buf_size) = Self::capacity(capacity);
         let mem = unsafe {
             alloc
@@ -70,20 +74,23 @@ impl<'a, T: Send> State<'a, T> {
         };
         let mem = mem.as_ptr() as *mut u8;
 
-        Self::init(num, mem)
+        Self::init(init, num, mem)
     }
 
-    fn init(num: usize, mem: *mut u8) -> Result<State<'a, T>, ()> {
+    fn init(init: bool, num: usize, mem: *mut u8) -> Result<State<'a, T>, ()> {
         let buffer = unsafe { from_raw_parts_mut(mem as *mut UnsafeCell<Node<T>>, num) };
-        for (i, e) in buffer.iter_mut().enumerate() {
-            unsafe {
-                ::core::ptr::write(
-                    e,
-                    UnsafeCell::new(Node {
-                        sequence: AtomicUsize::new(i),
-                        value: None,
-                    }),
-                );
+
+        if init {
+            for (i, e) in buffer.iter_mut().enumerate() {
+                unsafe {
+                    ::core::ptr::write(
+                        e,
+                        UnsafeCell::new(Node {
+                            sequence: AtomicUsize::new(i),
+                            value: None,
+                        }),
+                    );
+                }
             }
         }
 
@@ -201,9 +208,13 @@ impl<'a, T: Send> Queue<'a, T> {
         })
     }
 
-    pub fn with_capacity_in<A: Allocator>(capacity: usize, alloc: A) -> Result<Queue<'a, T>, ()> {
+    pub fn with_capacity_in<A: Allocator>(
+        init: bool,
+        capacity: usize,
+        alloc: A,
+    ) -> Result<Queue<'a, T>, ()> {
         Ok(Queue {
-            state: Arc::new(State::with_capacity_in(capacity, alloc)?),
+            state: Arc::new(State::with_capacity_in(init, capacity, alloc)?),
         })
     }
 
@@ -422,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_custom_allocator() {
-        let q = Queue::<i32>::with_capacity_in(QUEUE_SIZE, Global).unwrap();
+        let q = Queue::<i32>::with_capacity_in(true, QUEUE_SIZE, Global).unwrap();
         assert_eq!(q.len(), 0);
         assert_eq!(q.state.enqueue_pos.load(Ordering::Relaxed), 0);
         assert_eq!(q.state.dequeue_pos.load(Ordering::Relaxed), 0);
