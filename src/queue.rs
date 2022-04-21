@@ -21,8 +21,6 @@ use core::slice::from_raw_parts_mut;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use crossbeam_utils::CachePadded;
-
 use crate::QUEUE_SIZE;
 
 #[repr(C)]
