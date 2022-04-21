@@ -10,6 +10,7 @@
 #![allow(warnings)]
 
 use alloc::alloc::{alloc, Layout};
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::alloc::Allocator;
@@ -43,7 +44,7 @@ unsafe impl<'a, T: Send> Send for State<'a, T> {}
 unsafe impl<'a, T: Sync> Sync for State<'a, T> {}
 
 impl<'a, T: Send> State<'a, T> {
-    fn with_capacity(capacity: usize) -> Result<State<'a, T>, ()> {
+    fn with_capacity(capacity: usize) -> Result<Box<State<'a, T>>, ()> {
         let (num, buf_size) = Self::capacity(capacity);
         let mem = unsafe {
             alloc(
@@ -62,7 +63,7 @@ impl<'a, T: Send> State<'a, T> {
         init: bool,
         capacity: usize,
         alloc: A,
-    ) -> Result<State<'a, T>, ()> {
+    ) -> Result<Box<State<'a, T>>, ()> {
         let (num, buf_size) = Self::capacity(capacity);
         let mem = unsafe {
             alloc
@@ -77,9 +78,11 @@ impl<'a, T: Send> State<'a, T> {
         Self::init(init, num, mem)
     }
 
-    fn init(init: bool, num: usize, mem: *mut u8) -> Result<State<'a, T>, ()> {
-        let buffer = unsafe { from_raw_parts_mut(mem as *mut UnsafeCell<Node<T>>, num) };
+    fn init(init: bool, num: usize, mem: *mut u8) -> Result<Box<State<'a, T>>, ()> {
+        let buffer_ptr = unsafe { mem.add(size_of::<State<T>>()) as *mut UnsafeCell<Node<T>> };
+        let buffer = unsafe { from_raw_parts_mut(buffer_ptr, num) };
 
+        let mut state = unsafe { Box::from_raw(mem as *mut State<T>) };
         if init {
             for (i, e) in buffer.iter_mut().enumerate() {
                 unsafe {
@@ -92,14 +95,15 @@ impl<'a, T: Send> State<'a, T> {
                     );
                 }
             }
+
+            state.enqueue_pos.store(0, Release);
+            state.dequeue_pos.store(0, Release);
         }
 
-        Ok(State {
-            buffer,
-            mask: num - 1,
-            enqueue_pos: CachePadded::new(AtomicUsize::new(0)),
-            dequeue_pos: CachePadded::new(AtomicUsize::new(0)),
-        })
+        state.buffer = buffer;
+        state.mask = num - 1;
+
+        Ok(state)
     }
 
     fn capacity(capacity: usize) -> (usize, usize) {
@@ -114,7 +118,10 @@ impl<'a, T: Send> State<'a, T> {
             capacity
         };
 
-        (num, num * size_of::<UnsafeCell<Node<T>>>())
+        (
+            num,
+            size_of::<State<T>>() + num * size_of::<UnsafeCell<Node<T>>>(),
+        )
     }
 
     fn push(&self, value: T) -> Result<(), T> {
@@ -192,7 +199,7 @@ impl<'a, T: Send> State<'a, T> {
 
 // Lock-free MPMC queue.
 pub struct Queue<'a, T> {
-    state: Arc<State<'a, T>>,
+    state: Arc<Box<State<'a, T>>>,
 }
 
 impl<'a, T: Send> Queue<'a, T> {
