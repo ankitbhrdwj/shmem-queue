@@ -14,5 +14,5 @@ libc = "0.2.109"
 cstr_core = "0.2.4"
 
 [dev-dependencies]
-nix = "0.25.0"
+nix = "0.26.2"
 env_logger = "0.9.0"
