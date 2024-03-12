@@ -23,6 +23,12 @@ pub struct Sender<'a, T>(Queue<'a, T>);
 unsafe impl<'a, T: Send> Send for Sender<'a, T> {}
 unsafe impl<'a, T: Sync> Sync for Sender<'a, T> {}
 
+impl<'a, T: Send + Clone> Clone for Sender<'a, T> {
+    fn clone(&self) -> Sender<'a, T> {
+        Sender(self.0.clone())
+    }
+}
+
 impl<'a, T: Send + Clone> Sender<'a, T> {
     pub fn new(name: &str) -> Sender<'a, T> {
         Sender(
