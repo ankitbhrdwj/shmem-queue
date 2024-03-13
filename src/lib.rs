@@ -57,6 +57,12 @@ pub struct Receiver<'a, T>(Queue<'a, T>);
 unsafe impl<'a, T: Send> Send for Receiver<'a, T> {}
 unsafe impl<'a, T: Sync> Sync for Receiver<'a, T> {}
 
+impl<'a, T: Send + Clone> Clone for Receiver<'a, T> {
+    fn clone(&self) -> Receiver<'a, T> {
+        Receiver(self.0.clone())
+    }
+}
+
 impl<'a, T: Send> Receiver<'a, T> {
     pub fn new(name: &str) -> Receiver<'a, T> {
         Receiver(
