@@ -10,7 +10,7 @@ extern crate libc;
 
 const QUEUE_SIZE: usize = 1024;
 
-mod queue;
+pub mod queue;
 mod shmem;
 
 use alloc::string::String;
