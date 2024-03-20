@@ -10,12 +10,24 @@ extern crate libc;
 
 const QUEUE_SIZE: usize = 1024;
 
+#[cfg(feature = "spsc")]
+const MAX_BATCH_SIZE: usize = 32;
+
+#[cfg(feature = "mpsc")]
 pub mod queue;
 mod shmem;
+#[cfg(feature = "spsc")]
+pub mod spsc;
 
 use alloc::string::String;
-use queue::Queue;
 use shmem::{exists, ShmemAllocator};
+
+#[cfg(feature = "spsc")]
+use alloc::vec::Vec;
+#[cfg(feature = "mpsc")]
+pub use queue::Queue;
+#[cfg(feature = "spsc")]
+use spsc::Queue;
 
 #[repr(transparent)]
 pub struct Sender<'a, T>(Queue<'a, T>);
@@ -49,6 +61,12 @@ impl<'a, T: Send + Clone> Sender<'a, T> {
     pub fn try_send(&self, data: T) -> bool {
         self.0.enqueue(data).is_ok()
     }
+
+    #[cfg(feature = "spsc")]
+    pub fn send_batch(&self, data: Vec<T>) -> bool {
+        while self.0.enqueue_batch(data.clone()).is_err() {}
+        true
+    }
 }
 
 #[repr(transparent)]
@@ -81,6 +99,11 @@ impl<'a, T: Send> Receiver<'a, T> {
                 return data;
             }
         }
+    }
+
+    #[cfg(feature = "spsc")]
+    pub fn try_recv_batch(&self) -> Vec<Option<T>> {
+        self.0.dequeue_batch()
     }
 
     pub fn try_recv(&self) -> Option<T> {
