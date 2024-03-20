@@ -27,7 +27,7 @@ unsafe fn shm_open(name: &str, oflag: c_int, mode: mode_t) -> c_int {
     ret
 }
 
-unsafe fn shm_unlink(name: *const c_char) -> c_int {
+pub unsafe fn shm_unlink(name: *const c_char) -> c_int {
     let result = unlink(name);
     if result < 0 {
         log::error!("shm_unlink failed");

@@ -128,6 +128,7 @@ mod tests {
 
     #[test]
     fn test_default_initialization() {
+        std::fs::remove_file("/dev/shm/test").ok();
         let queue = Queue::<i32>::new(mem());
         assert!(queue.log.len() == QUEUE_SIZE);
         assert_eq!(queue.head(), 0);
@@ -140,6 +141,7 @@ mod tests {
 
     #[test]
     fn test_enqueue() {
+        std::fs::remove_file("/dev/shm/test").ok();
         let queue = Queue::<i32>::new(mem());
         assert!(queue.enqueue(1).is_ok());
         assert_eq!(queue.head(), 1);
@@ -147,6 +149,7 @@ mod tests {
 
     #[test]
     fn test_dequeue() {
+        std::fs::remove_file("/dev/shm/test").ok();
         let queue = Queue::<i32>::new(mem());
         assert!(queue.enqueue(1).is_ok());
         assert_eq!(queue.head(), 1);
@@ -159,6 +162,7 @@ mod tests {
 
     #[test]
     fn test_equeue_full() {
+        std::fs::remove_file("/dev/shm/test").ok();
         let queue = Queue::<i32>::new(mem());
         for i in 0..QUEUE_SIZE - 1 {
             assert!(queue.enqueue(i as i32).is_ok());
@@ -170,12 +174,14 @@ mod tests {
 
     #[test]
     fn test_dequeue_empty() {
+        std::fs::remove_file("/dev/shm/test").ok();
         let queue = Queue::<i32>::new(mem());
         assert_eq!(queue.dequeue(), None);
     }
 
     #[test]
     fn test_two_clients() {
+        std::fs::remove_file("/dev/shm/test").ok();
         let producer = Queue::<i32>::new(mem());
         let consumer = Queue::<i32>::new(mem());
 
@@ -190,6 +196,7 @@ mod tests {
 
     #[test]
     fn test_parallel_client() {
+        std::fs::remove_file("/dev/shm/test").ok();
         let producer = Queue::<i32>::new(mem());
         let consumer = Queue::<i32>::new(mem());
         let num_iterations = 10 * QUEUE_SIZE;

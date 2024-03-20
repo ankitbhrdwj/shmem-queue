@@ -14,6 +14,7 @@ struct Message {
 
 #[cfg(feature = "mpsc")]
 fn unbatched() {
+    std::fs::remove_file("/dev/shm/queue").ok();
     let active_sender = Arc::new(AtomicBool::new(true));
 
     let rx_flag = active_sender.clone();
@@ -47,6 +48,7 @@ fn unbatched() {
 
 #[cfg(feature = "spsc")]
 fn batched(batch_size: usize) {
+    std::fs::remove_file("/dev/shm/queue").ok();
     let active_sender = Arc::new(AtomicBool::new(true));
 
     let rx_flag = active_sender.clone();

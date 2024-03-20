@@ -7,13 +7,13 @@
 ## Run tests
 
 ```bash
-cargo test --features spsc --no-default-features
-cargo test --features mpmc --no-default-features
+RUST_TEST_THREADS=1 cargo test --features spsc --no-default-features
+RUST_TEST_THREADS=1 cargo test --features mpsc --no-default-features
 ```
 
 ## Run benchmarks
 
 ```bash
-cargo bench --features spsc --no-default-features
-cargo bench --features mpmc --no-default-features
+taskset -c 0,1 cargo run --features spsc --no-default-features
+taskset -c 0,1 cargo run --features mpsc --no-default-features
 ```
