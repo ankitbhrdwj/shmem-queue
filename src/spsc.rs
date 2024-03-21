@@ -14,6 +14,22 @@ pub struct Queue<'a, T> {
     tail: *const AtomicUsize,
 }
 
+impl<'a, T> Default for Queue<'a, T> {
+    fn default() -> Self {
+        let size = size_of::<QueueEntry<T>>() + size_of::<AtomicUsize>() * 2;
+        let mem = unsafe {
+            alloc(
+                Layout::from_size_align(buf_size, align_of::<State<T>>())
+                    .expect("Alignment error while allocating the Queue!"),
+            )
+        };
+        if mem.is_null() {
+            panic!("Failed to allocate memory for the Queue!");
+        }
+        Queue::new(mem as *mut u8)
+    }
+}
+
 /// This is just to make the compiler happy
 /// when using queue with multiple threads.
 unsafe impl<'a, T> Send for Queue<'a, T> {}
