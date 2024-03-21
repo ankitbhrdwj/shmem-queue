@@ -27,7 +27,7 @@ use alloc::vec::Vec;
 #[cfg(feature = "mpsc")]
 pub use queue::Queue;
 #[cfg(feature = "spsc")]
-use spsc::Queue;
+pub use spsc::Queue;
 
 #[repr(transparent)]
 pub struct Sender<'a, T>(Queue<'a, T>);
