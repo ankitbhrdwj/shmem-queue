@@ -9,14 +9,10 @@ extern crate alloc;
 extern crate libc;
 
 const QUEUE_SIZE: usize = 1024;
-
-#[cfg(feature = "spsc")]
 const MAX_BATCH_SIZE: usize = 32;
 
-#[cfg(feature = "mpsc")]
 pub mod queue;
 mod shmem;
-#[cfg(feature = "spsc")]
 pub mod spsc;
 
 use alloc::string::String;
