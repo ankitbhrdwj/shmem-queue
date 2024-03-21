@@ -1,4 +1,5 @@
 use crate::{MAX_BATCH_SIZE, QUEUE_SIZE};
+use alloc::alloc::alloc;
 use alloc::alloc::{Allocator, Layout};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
@@ -16,10 +17,10 @@ pub struct Queue<'a, T> {
 
 impl<'a, T> Default for Queue<'a, T> {
     fn default() -> Self {
-        let size = size_of::<QueueEntry<T>>() + size_of::<AtomicUsize>() * 2;
+        let buf_size = size_of::<QueueEntry<T>>() + size_of::<AtomicUsize>() * 2;
         let mem = unsafe {
             alloc(
-                Layout::from_size_align(buf_size, align_of::<State<T>>())
+                Layout::from_size_align(buf_size, align_of::<Queue<T>>())
                     .expect("Alignment error while allocating the Queue!"),
             )
         };
