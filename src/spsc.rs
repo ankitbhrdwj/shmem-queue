@@ -84,7 +84,7 @@ impl<'a, T> Queue<'a, T> {
     }
 
     #[allow(clippy::result_unit_err)]
-    pub fn enqueue_batch(&self, values: Vec<T>) -> Result<(), ()> {
+    pub fn enqueue_batch(&self, values: &mut Vec<T>) -> Result<(), ()> {
         if self.head() + values.len() > self.tail() + QUEUE_SIZE {
             return Err(());
         }
@@ -92,9 +92,9 @@ impl<'a, T> Queue<'a, T> {
 
         let batch_len = values.len();
         unsafe {
-            for (i, v) in values.into_iter().enumerate() {
+            values.drain(0..batch_len).enumerate().for_each(|(i, v)| {
                 *self.log.get_unchecked((self.head() + i) % QUEUE_SIZE).get() = Some(v);
-            }
+            });
             (*self.head).fetch_add(batch_len, Ordering::Release);
         }
         Ok(())
@@ -250,8 +250,8 @@ mod tests {
 
         let producer_thread = std::thread::spawn(move || {
             for _ in 0..num_iterations / MAX_BATCH_SIZE {
-                let values: Vec<i32> = (0..MAX_BATCH_SIZE).map(|x| x as i32).collect();
-                while producer.enqueue_batch(values.clone()).is_err() {}
+                let mut values: Vec<i32> = (0..MAX_BATCH_SIZE).map(|x| x as i32).collect();
+                while producer.enqueue_batch(&mut values).is_err() {}
             }
         });
 

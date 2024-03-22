@@ -59,8 +59,8 @@ impl<'a, T: Send + Clone> Sender<'a, T> {
     }
 
     #[cfg(feature = "spsc")]
-    pub fn send_batch(&self, data: Vec<T>) -> bool {
-        while self.0.enqueue_batch(data.clone()).is_err() {}
+    pub fn send_batch(&self, data: &mut Vec<T>) -> bool {
+        while self.0.enqueue_batch(data).is_err() {}
         true
     }
 }

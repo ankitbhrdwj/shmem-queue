@@ -58,12 +58,12 @@ fn batched(batch_size: usize) {
         let sender = shmem_queue::Sender::<Message>::new("queue");
 
         let start = Instant::now();
+        let mut batch = Vec::with_capacity(batch_size);
         for _ in 0..ITERATIONS / batch_size {
-            let mut batch = Vec::with_capacity(batch_size);
             for _ in 0..batch_size {
                 batch.push(Message::default());
             }
-            sender.send_batch(batch);
+            sender.send_batch(&mut batch);
         }
         let elapsed_time = start.elapsed().as_nanos() as u64;
         println!(
