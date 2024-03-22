@@ -27,7 +27,7 @@ impl<'a, T> Default for Queue<'a, T> {
         if mem.is_null() {
             panic!("Failed to allocate memory for the Queue!");
         }
-        Queue::new(mem as *mut u8)
+        Queue::new(mem)
     }
 }
 
@@ -92,10 +92,9 @@ impl<'a, T> Queue<'a, T> {
 
         let batch_len = values.len();
         unsafe {
-            if let Some(value) = values.into_iter().next() {
-                *self.log.get_unchecked(self.head() % QUEUE_SIZE).get() = Some(value);
+            for (i, v) in values.into_iter().enumerate() {
+                *self.log.get_unchecked((self.head() + i) % QUEUE_SIZE).get() = Some(v);
             }
-
             (*self.head).fetch_add(batch_len, Ordering::Release);
         }
         Ok(())
@@ -118,15 +117,18 @@ impl<'a, T> Queue<'a, T> {
         let mut batch = Vec::with_capacity(MAX_BATCH_SIZE);
         let mut tail = self.tail();
         let head = self.head();
-        while tail < head && batch.len() < MAX_BATCH_SIZE {
-            batch.push(unsafe {
-                let value = (*self.log[tail % QUEUE_SIZE].get()).take();
-                tail += 1;
-                value
-            });
+
+        if head == tail {
+            return batch;
+        }
+
+        while head > tail && batch.len() < MAX_BATCH_SIZE {
+            let value = unsafe { (*self.log[tail % QUEUE_SIZE].get()).take() };
+            tail += 1;
+            batch.push(value);
         }
         unsafe {
-            (*self.tail).store(tail, Ordering::Release);
+            (*self.tail).fetch_add(batch.len(), Ordering::Release);
         }
         batch
     }
@@ -233,6 +235,36 @@ mod tests {
                     }
                 }
             }
+        });
+
+        producer_thread.join().unwrap();
+        consumer_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_parallel_client_batch() {
+        std::fs::remove_file("/dev/shm/test").ok();
+        let producer = Queue::<i32>::new(mem());
+        let consumer = Queue::<i32>::new(mem());
+        let num_iterations = 100 * QUEUE_SIZE;
+
+        let producer_thread = std::thread::spawn(move || {
+            for _ in 0..num_iterations / MAX_BATCH_SIZE {
+                let values: Vec<i32> = (0..MAX_BATCH_SIZE).map(|x| x as i32).collect();
+                while producer.enqueue_batch(values.clone()).is_err() {}
+            }
+        });
+
+        let consumer_thread = std::thread::spawn(move || {
+            let mut received = 0;
+            while received < num_iterations {
+                let batch = consumer.dequeue_batch();
+                received += batch.len();
+                for (i, value) in batch.into_iter().enumerate() {
+                    assert_eq!(value, Some(i as i32));
+                }
+            }
+            assert!(received == num_iterations);
         });
 
         producer_thread.join().unwrap();

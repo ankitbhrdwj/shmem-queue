@@ -1,7 +1,4 @@
-use std::{
-    sync::{atomic::AtomicBool, Arc},
-    time::Instant,
-};
+use std::time::Instant;
 
 const ITERATIONS: usize = 50_000_000;
 
@@ -15,17 +12,17 @@ struct Message {
 #[cfg(feature = "mpsc")]
 fn unbatched() {
     std::fs::remove_file("/dev/shm/queue").ok();
-    let active_sender = Arc::new(AtomicBool::new(true));
 
-    let rx_flag = active_sender.clone();
     let rx_thread = std::thread::spawn(move || {
         let reciver = shmem_queue::Receiver::<Message>::new("queue");
-        while rx_flag.load(std::sync::atomic::Ordering::Acquire) {
-            let _ = reciver.try_recv();
+        let mut received = 0;
+        while received < ITERATIONS {
+            if reciver.try_recv().is_some() {
+                received += 1;
+            }
         }
     });
 
-    let tx_flag = active_sender.clone();
     let tx_thread = std::thread::spawn(move || {
         let sender = shmem_queue::Sender::<Message>::new("queue");
 
@@ -39,8 +36,6 @@ fn unbatched() {
             elapsed_time / ITERATIONS as u64,
             (ITERATIONS as f64 * 1e9) / elapsed_time as f64
         );
-
-        tx_flag.store(false, std::sync::atomic::Ordering::Relaxed);
     });
     _ = rx_thread.join();
     _ = tx_thread.join();
@@ -49,17 +44,16 @@ fn unbatched() {
 #[cfg(feature = "spsc")]
 fn batched(batch_size: usize) {
     std::fs::remove_file("/dev/shm/queue").ok();
-    let active_sender = Arc::new(AtomicBool::new(true));
 
-    let rx_flag = active_sender.clone();
     let rx_thread = std::thread::spawn(move || {
         let reciver = shmem_queue::Receiver::<Message>::new("queue");
-        while rx_flag.load(std::sync::atomic::Ordering::Acquire) {
-            let _ = reciver.try_recv_batch();
+        let mut received = 0;
+
+        while received < ITERATIONS {
+            received += reciver.try_recv_batch().len();
         }
     });
 
-    let tx_flag = active_sender.clone();
     let tx_thread = std::thread::spawn(move || {
         let sender = shmem_queue::Sender::<Message>::new("queue");
 
@@ -78,8 +72,6 @@ fn batched(batch_size: usize) {
             elapsed_time / ITERATIONS as u64,
             (ITERATIONS as f64 * 1e9) / elapsed_time as f64
         );
-
-        tx_flag.store(false, std::sync::atomic::Ordering::Relaxed);
     });
     _ = rx_thread.join();
     _ = tx_thread.join();
