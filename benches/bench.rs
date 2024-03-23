@@ -48,9 +48,12 @@ fn batched(batch_size: usize) {
     let rx_thread = std::thread::spawn(move || {
         let reciver = shmem_queue::Receiver::<Message>::new("queue");
         let mut received = 0;
+        let mut batch = Vec::with_capacity(batch_size);
 
         while received < ITERATIONS {
-            received += reciver.try_recv_batch().len();
+            batch = reciver.try_recv_batch(batch);
+            received += batch.len();
+            batch.clear();
         }
     });
 

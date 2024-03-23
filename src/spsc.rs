@@ -113,8 +113,7 @@ impl<'a, T> Queue<'a, T> {
         }
     }
 
-    pub fn dequeue_batch(&self) -> Vec<Option<T>> {
-        let mut batch = Vec::with_capacity(MAX_BATCH_SIZE);
+    pub fn dequeue_batch(&self, mut batch: Vec<Option<T>>) -> Vec<Option<T>> {
         let mut tail = self.tail();
         let head = self.head();
 
@@ -257,12 +256,13 @@ mod tests {
 
         let consumer_thread = std::thread::spawn(move || {
             let mut received = 0;
+            let mut batch = Vec::with_capacity(MAX_BATCH_SIZE);
             while received < num_iterations {
-                let batch = consumer.dequeue_batch();
+                batch = consumer.dequeue_batch(batch);
                 received += batch.len();
-                for (i, value) in batch.into_iter().enumerate() {
+                batch.drain(..).enumerate().for_each(|(i, value)| {
                     assert_eq!(value, Some(i as i32));
-                }
+                });
             }
             assert!(received == num_iterations);
         });
