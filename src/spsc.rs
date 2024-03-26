@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 type QueueEntry<T> = [UnsafeCell<Option<T>>; QUEUE_SIZE];
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Queue<'a, T> {
     log: &'a QueueEntry<T>,
     head: *const AtomicUsize,
@@ -28,6 +28,16 @@ impl<'a, T> Default for Queue<'a, T> {
             panic!("Failed to allocate memory for the Queue!");
         }
         Queue::new(mem)
+    }
+}
+
+impl <'a, T> Clone for Queue<'a, T> {
+    fn clone(&self) -> Self {
+	Queue {
+	    log: self.log,
+	    head: self.head,
+	    tail: self.tail,
+	}
     }
 }
 
