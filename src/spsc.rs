@@ -80,6 +80,10 @@ impl<'a, T> Queue<'a, T> {
         unsafe { (*self.tail).load(Ordering::Acquire) }
     }
 
+    pub fn full(&self) -> bool {
+	self.head() == self.tail() + QUEUE_SIZE - 1
+    }
+
     pub fn enqueue(&self, value: T) -> Result<(), T> {
         if self.head() == self.tail() + QUEUE_SIZE - 1 {
             return Err(value);
