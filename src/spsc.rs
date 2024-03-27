@@ -127,12 +127,12 @@ impl<'a, T> Queue<'a, T> {
         }
     }
 
-    pub fn dequeue_batch(&self, mut batch: Vec<Option<T>>) -> Vec<Option<T>> {
+    pub fn dequeue_batch(&self, batch: &mut Vec<Option<T>>)  {
         let mut tail = self.tail();
         let head = self.head();
 
         if head == tail {
-            return batch;
+            return;
         }
 
         while head > tail && batch.len() < MAX_BATCH_SIZE {
@@ -143,7 +143,6 @@ impl<'a, T> Queue<'a, T> {
         unsafe {
             (*self.tail).fetch_add(batch.len(), Ordering::Release);
         }
-        batch
     }
 }
 

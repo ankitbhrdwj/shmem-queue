@@ -98,7 +98,7 @@ impl<'a, T: Send> Receiver<'a, T> {
     }
 
     #[cfg(feature = "spsc")]
-    pub fn try_recv_batch(&self, batch: Vec<Option<T>>) -> Vec<Option<T>> {
+    pub fn try_recv_batch(&self, batch: &mut Vec<Option<T>>) {
         self.0.dequeue_batch(batch)
     }
 
