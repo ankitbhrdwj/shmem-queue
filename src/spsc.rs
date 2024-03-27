@@ -271,7 +271,7 @@ mod tests {
             let mut received = 0;
             let mut batch = Vec::with_capacity(MAX_BATCH_SIZE);
             while received < num_iterations {
-                batch = consumer.dequeue_batch(batch);
+                consumer.dequeue_batch(&mut batch);
                 received += batch.len();
                 batch.drain(..).enumerate().for_each(|(i, value)| {
                     assert_eq!(value, Some(i as i32));
