@@ -51,7 +51,7 @@ fn batched(batch_size: usize) {
         let mut batch = Vec::with_capacity(batch_size);
 
         while received < ITERATIONS {
-            batch = reciver.try_recv_batch(batch);
+            reciver.try_recv_batch(&mut batch);
             received += batch.len();
             batch.clear();
         }
