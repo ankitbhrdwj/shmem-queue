@@ -31,13 +31,13 @@ impl<'a, T> Default for Queue<'a, T> {
     }
 }
 
-impl <'a, T> Clone for Queue<'a, T> {
+impl<'a, T> Clone for Queue<'a, T> {
     fn clone(&self) -> Self {
-	Queue {
-	    log: self.log,
-	    head: self.head,
-	    tail: self.tail,
-	}
+        Queue {
+            log: self.log,
+            head: self.head,
+            tail: self.tail,
+        }
     }
 }
 
@@ -81,7 +81,7 @@ impl<'a, T> Queue<'a, T> {
     }
 
     pub fn full(&self) -> bool {
-	self.head() == self.tail() + QUEUE_SIZE - 1
+        self.head() == self.tail() + QUEUE_SIZE - 1
     }
 
     pub fn enqueue(&self, value: T) -> Result<(), T> {
@@ -91,7 +91,10 @@ impl<'a, T> Queue<'a, T> {
         log::debug!("head: {}, tail: {}", self.head(), self.tail());
 
         unsafe {
-            *self.log.get_unchecked(self.head() % QUEUE_SIZE).get() = Some(value);
+            core::ptr::write(
+                self.log.get_unchecked(self.head() % QUEUE_SIZE).get(),
+                Some(value),
+            );
             (*self.head).fetch_add(1, Ordering::Release);
         }
         Ok(())
@@ -107,7 +110,10 @@ impl<'a, T> Queue<'a, T> {
         let batch_len = values.len();
         unsafe {
             values.drain(0..batch_len).enumerate().for_each(|(i, v)| {
-                *self.log.get_unchecked((self.head() + i) % QUEUE_SIZE).get() = Some(v);
+                core::ptr::write(
+                    self.log.get_unchecked((self.head() + i) % QUEUE_SIZE).get(),
+                    Some(v),
+                );
             });
             (*self.head).fetch_add(batch_len, Ordering::Release);
         }
@@ -127,7 +133,7 @@ impl<'a, T> Queue<'a, T> {
         }
     }
 
-    pub fn dequeue_batch(&self, batch: &mut Vec<Option<T>>)  {
+    pub fn dequeue_batch(&self, batch: &mut Vec<Option<T>>) {
         let mut tail = self.tail();
         let head = self.head();
 
